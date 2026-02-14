@@ -27,3 +27,5 @@ src/version.js
 *.sln
 *.sw?
 .yarn/install-state.gz
+tmp/
+*.*~
