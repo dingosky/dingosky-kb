@@ -235,7 +235,7 @@ const TestWrapper = ({ children }) => {
   )
 }
 
-describe('Concepts panel integration', () => {
+describe('panel integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })

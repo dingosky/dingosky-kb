@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState, useCallback } from 'react'
+import { use, useState, useCallback, useReducer, useEffect } from 'react'
 
 import { ThemeProvider } from '@mui/material/styles'
 import { CssBaseline } from '@mui/material'
@@ -9,21 +9,35 @@ import { BrowserRouter } from 'react-router-dom'
 
 import kbTheme from '@/lib/theme'
 import Concepts from '@/components/kb/panels/Concepts'
+import ConceptModal from '@/components/modal/ConceptModal'
 
 import AppModalContext from '@/contexts/app/AppModalContext'
 import ConfigContext from '@/contexts/config/ConfigContext'
 import ConceptContext from '@/contexts/panels/concepts/ConceptContext'
 import ConceptModalContext from '@/contexts/panels/concepts/modal/ConceptModalContext'
+import ConceptModalProvider from '@/contexts/panels/concepts/modal/ConceptModalProvider'
 import PanelDataContext from '@/contexts/panel/data/PanelDataContext'
+import PreferencesContext from '@/contexts/preferences/PreferencesContext'
+import RefreshContext from '@/contexts/refresh/RefreshContext'
 import SelectedContext from '@/contexts/selected/SelectedContext'
 import TaxonomyContext from '@/contexts/taxonomy/TaxonomyContext'
 import UserContext from '@/contexts/user/UserContext'
 
 import CONFIG from '@/text'
+import conceptStateReducer from '@/contexts/panels/concepts/staged/edit/conceptStateReducer'
+import useModifyConcept from '@/contexts/panels/concepts/staged/edit/useModifyConcept'
+import { initialConceptState } from '@/lib/concept/state/state'
+import { CONCEPT_STATE } from '@/lib/constants/conceptState.js'
 
-const { CHANGE_NAME, CHANGE_PARENT, ADD_CHILD, DELETE_CONCEPT } = CONFIG.CONCEPT.STRUCTURE
+const { ADD_CHILD } = CONFIG.CONCEPT.STRUCTURE
+const { MODALS } = CONFIG.PANELS.CONCEPTS
 
-// Mock concept data - buildTree expects conceptMap[child] for each child
+const ConceptModalRenderer = () => {
+  const { modal } = use(ConceptModalContext)
+  return modal ? <ConceptModal /> : null
+}
+
+// Mock concept data
 const rootConcept = {
   name: 'root',
   parent: null,
@@ -63,6 +77,7 @@ const entityConcept = {
 const mockGetConcept = vi.fn(name => {
   if (name === 'object') return objectConcept
   if (name === 'root') return rootConcept
+  if (name === 'entity') return entityConcept
   return null
 })
 
@@ -104,54 +119,22 @@ const mockPanelSelect = {
   clear: () => {},
 }
 
-// Staged state for object with hasStagedChildren so CHANGE_NAME, CHANGE_PARENT, DELETE_CONCEPT are disabled
-const objectStagedState = {
-  name: { value: 'object', action: 'None' },
-  parent: { action: 'None' },
-  author: { value: '', action: 'None' },
-  children: [{ action: 'Add Child', name: 'stagedChild', index: 0 }],
-  deleteConcept: false,
-  aliases: [],
-  templates: [],
-  rank: { action: 'None', level: '', name: '' },
-  realizations: [],
-  media: [],
-}
-
-const baseStagedState = {
-  name: { value: 'root', action: 'None' },
-  parent: { action: 'None' },
-  author: { value: '', action: 'None' },
-  children: [],
-  deleteConcept: false,
-  aliases: [],
-  templates: [],
-  rank: { action: 'None', level: '', name: '' },
-  realizations: [],
-  media: [],
-}
-
-const baseInitialState = {
-  author: { value: '', action: 'None' },
-  deleteConcept: false,
-  aliases: [],
-  templates: [],
-  children: [],
-  name: { value: 'root', action: 'None' },
-  parent: { action: 'None' },
-  rank: { action: 'None', level: '', name: '' },
-  realizations: [],
-  media: [],
-}
-
-const objectInitialState = {
-  ...baseInitialState,
-  name: { value: 'object', action: 'None' },
-}
-
 const TestWrapper = ({ children }) => {
   const [concept, setConcept] = useState(rootConcept)
+  const [stagedState, dispatch] = useReducer(conceptStateReducer, {})
+  const [initialState, setInitialState] = useState(null)
+  const [confirmReset, setConfirmReset] = useState(null)
   const [isEditing, setEditing] = useState(false)
+
+  useEffect(() => {
+    if (concept) {
+      const state = initialConceptState({ ...concept, templates: [] }, [])
+      setInitialState(state)
+      dispatch({ type: CONCEPT_STATE.INITIAL, update: state })
+    }
+  }, [concept?.name])
+
+  const modifyConcept = useModifyConcept(dispatch, initialState, setConfirmReset)
 
   const mockConceptSelect = {
     current: () => concept?.name,
@@ -202,18 +185,6 @@ const TestWrapper = ({ children }) => {
     isLoading: false,
   }
 
-  const mockConceptModalValue = {
-    setModal: vi.fn(),
-    setModalData: vi.fn(),
-    closeModal: vi.fn(),
-    modal: null,
-    modalData: {},
-    processing: false,
-    processingMessage: null,
-    beginProcessing: vi.fn(),
-    withProcessing: vi.fn(),
-  }
-
   const mockAppModalValue = {
     beginProcessing: vi.fn(() => () => {}),
     setSuppressDisplay: vi.fn(),
@@ -237,11 +208,12 @@ const TestWrapper = ({ children }) => {
     isLoading: false,
   }
 
-  // Admin role so Edit button and structure icon are enabled (not read-only)
-  const mockUserValue = { user: { role: 'Admin' } }
-
-  const stagedState = concept?.name === 'object' ? objectStagedState : baseStagedState
-  const initialState = concept?.name === 'object' ? objectInitialState : baseInitialState
+  const mockUserValue = {
+    user: { role: 'Admin' },
+    getPreferences: vi.fn(() => Promise.resolve({})),
+  }
+  const mockRefreshValue = { refresh: vi.fn(() => Promise.resolve()) }
+  const mockPreferencesValue = { savePreferences: vi.fn(() => Promise.resolve()) }
 
   return (
     <ThemeProvider theme={kbTheme}>
@@ -251,28 +223,34 @@ const TestWrapper = ({ children }) => {
           <ConfigContext.Provider value={mockConfigValue}>
             <AppModalContext.Provider value={mockAppModalValue}>
               <PanelDataContext.Provider value={mockPanelDataValue}>
-              <TaxonomyContext.Provider value={mockTaxonomyValue}>
-                <ConceptModalContext.Provider value={mockConceptModalValue}>
-                  <SelectedContext.Provider value={mockSelectedValue}>
-                    <ConceptContext.Provider
-                      value={{
-                        concept,
-                        conceptPath: concept ? [concept.name] : null,
-                        onConceptTreeReady: vi.fn(),
-                        stagedState: concept ? stagedState : null,
-                        initialState: concept ? initialState : null,
-                        isMarineOrganism: false,
-                        isEditing,
-                        setEditing,
-                        modifyConcept: vi.fn(),
-                        pending: () => [],
-                      }}
-                    >
-                      {children}
-                    </ConceptContext.Provider>
-                  </SelectedContext.Provider>
-                </ConceptModalContext.Provider>
-              </TaxonomyContext.Provider>
+                <PreferencesContext.Provider value={mockPreferencesValue}>
+                  <RefreshContext.Provider value={mockRefreshValue}>
+                    <TaxonomyContext.Provider value={mockTaxonomyValue}>
+                      <ConceptModalProvider>
+                        <SelectedContext.Provider value={mockSelectedValue}>
+                          <ConceptContext.Provider
+                            value={{
+                              concept,
+                              conceptPath: concept ? [concept.name] : null,
+                              onConceptTreeReady: vi.fn(),
+                              stagedState,
+                              initialState,
+                              isMarineOrganism: false,
+                              isEditing,
+                              setEditing,
+                              modifyConcept,
+                              confirmReset,
+                              pending: () => [],
+                            }}
+                          >
+                            {children}
+                            <ConceptModalRenderer />
+                          </ConceptContext.Provider>
+                        </SelectedContext.Provider>
+                      </ConceptModalProvider>
+                    </TaxonomyContext.Provider>
+                  </RefreshContext.Provider>
+                </PreferencesContext.Provider>
               </PanelDataContext.Provider>
             </AppModalContext.Provider>
           </ConfigContext.Provider>
@@ -282,12 +260,12 @@ const TestWrapper = ({ children }) => {
   )
 }
 
-describe('Concepts concept object structure choices', () => {
+describe('concept object add child discard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('selects object, clicks Edit, verifies isEditing, opens structure choices, verifies button states', async () => {
+  it('adds child dingo, stages, discards all, verifies ConceptStructureIcon is hidden', async () => {
     const user = userEvent.setup()
 
     render(
@@ -296,7 +274,7 @@ describe('Concepts concept object structure choices', () => {
       </TestWrapper>
     )
 
-    // Enter 'object' in ConceptSelect
+    // Select concept 'object' in ConceptSelect (as in structure choices test)
     const conceptInput = screen.getByRole('combobox')
     await user.click(conceptInput)
     await user.clear(conceptInput)
@@ -311,40 +289,65 @@ describe('Concepts concept object structure choices', () => {
       expect(screen.getAllByText('object').length).toBeGreaterThan(0)
     })
 
-    // Select the Edit button (ConceptEditingActions)
+    // Click Edit to enter editing mode
     const editButton = screen.getByRole('button', { name: 'Edit' })
-    expect(editButton).toBeInTheDocument()
     await user.click(editButton)
 
-    // Verify ConceptProvider context has isEditing true - ConceptStructureIcon only shows when isEditing
-    // ConceptStructureIcon is an IconButton with tooltip "Edit Concept Structure"
+    // Click structure choices icon
     await waitFor(() => {
-      const structureIcon = screen.getByRole('button', { name: /edit concept structure/i })
-      expect(structureIcon).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /edit concept structure/i })).toBeInTheDocument()
     })
-
-    // Verify ConceptView ConceptName has ConceptStructureIcon - click it
     const structureIcon = screen.getByRole('button', { name: /edit concept structure/i })
     await user.click(structureIcon)
 
-    // Verify ChangeStructureChoices is displayed
+    // Click ADD_CHILD button
     await waitFor(() => {
-      expect(screen.getByText(CHANGE_NAME)).toBeInTheDocument()
-      expect(screen.getByText(CHANGE_PARENT)).toBeInTheDocument()
       expect(screen.getByText(ADD_CHILD)).toBeInTheDocument()
-      expect(screen.getByText(DELETE_CONCEPT)).toBeInTheDocument()
     })
-
-    // Verify CHANGE_NAME, CHANGE_PARENT, DELETE_CONCEPT buttons are disabled
-    const changeNameButton = screen.getByRole('button', { name: CHANGE_NAME })
-    const changeParentButton = screen.getByRole('button', { name: CHANGE_PARENT })
-    const deleteConceptButton = screen.getByRole('button', { name: DELETE_CONCEPT })
-    expect(changeNameButton).toBeDisabled()
-    expect(changeParentButton).toBeDisabled()
-    expect(deleteConceptButton).toBeDisabled()
-
-    // Verify ADD_CHILD button is enabled
     const addChildButton = screen.getByRole('button', { name: ADD_CHILD })
-    expect(addChildButton).toBeEnabled()
+    await user.click(addChildButton)
+
+    // In the add child modal: enter name 'dingo' and author 'me'
+    await waitFor(() => {
+      expect(screen.getByText('Add child')).toBeInTheDocument()
+    })
+    const nameInput = screen.getByRole('textbox', { name: /name/i })
+    const authorInput = screen.getByRole('textbox', { name: /author/i })
+    await user.clear(nameInput)
+    await user.type(nameInput, 'dingo')
+    await user.clear(authorInput)
+    await user.type(authorInput, 'me')
+
+    // Wait for debounced modalData update (333ms) so Stage button becomes enabled
+    await waitFor(
+      async () => {
+        const stageButton = screen.getByRole('button', { name: 'Stage' })
+        expect(stageButton).toBeEnabled()
+      },
+      { timeout: 500 }
+    )
+
+    // Click Stage
+    const stageButton = screen.getByRole('button', { name: 'Stage' })
+    await user.click(stageButton)
+
+    // Click Discard All in ConceptEditingActions
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Discard All' })).toBeInTheDocument()
+    })
+    const discardAllButton = screen.getByRole('button', { name: 'Discard All' })
+    await user.click(discardAllButton)
+
+    // In the confirmation modal, click Discard to confirm
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument()
+    })
+    const confirmDiscardButton = screen.getByRole('button', { name: 'Discard' })
+    await user.click(confirmDiscardButton)
+
+    // Verify ConceptStructureIcon is not displayed
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /edit concept structure/i })).not.toBeInTheDocument()
+    })
   })
 })
